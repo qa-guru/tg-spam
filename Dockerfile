@@ -24,7 +24,7 @@ RUN \
 
 FROM alpine:3.22
 # enables automatic changelog generation by tools like Dependabot
-LABEL org.opencontainers.image.source="https://github.com/umputun/tg-spam"
+LABEL org.opencontainers.image.source="https://github.com/qa-guru/tg-spam"
 ENV TGSPAM_IN_DOCKER=1
 RUN apk add --no-cache tzdata
 COPY --from=build /build/tg-spam /srv/tg-spam

@@ -1,6 +1,6 @@
 module github.com/umputun/tg-spam
 
-go 1.25.0
+go 1.27
 
 require (
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260714195021-948927f23598

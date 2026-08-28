@@ -1,6 +1,6 @@
 module github.com/umputun/tg-spam/_examples/simplechat
 
-go 1.24
+go 1.27
 
 require (
 	github.com/umputun/tg-spam v1.18.0

@@ -90,7 +90,7 @@ var locatorQueries = engine.NewQueryMap().
 		Postgres: "ALTER TABLE spam ADD COLUMN IF NOT EXISTS gid TEXT DEFAULT ''",
 	}).
 	Add(CmdAddLocatorMessage, engine.Query{
-		Sqlite: `INSERT OR REPLACE INTO messages (hash, gid, time, chat_id, user_id, user_name, msg_id) 
+		Sqlite: `INSERT OR REPLACE INTO messages (hash, gid, time, chat_id, user_id, user_name, msg_id)
             VALUES (:hash, :gid, :time, :chat_id, :user_id, :user_name, :msg_id)`,
 		Postgres: `INSERT INTO messages (hash, gid, time, chat_id, user_id, user_name, msg_id)
             VALUES (:hash, :gid, :time, :chat_id, :user_id, :user_name, :msg_id)
@@ -102,7 +102,7 @@ var locatorQueries = engine.NewQueryMap().
             msg_id = :msg_id`,
 	}).
 	Add(CmdAddLocatorSpam, engine.Query{
-		Sqlite: `INSERT OR REPLACE INTO spam (user_id, gid, time, checks) 
+		Sqlite: `INSERT OR REPLACE INTO spam (user_id, gid, time, checks)
             VALUES (:user_id, :gid, :time, :checks)`,
 		Postgres: `INSERT INTO spam (user_id, gid, time, checks)
             VALUES (:user_id, :gid, :time, :checks)
@@ -420,6 +420,12 @@ func (l *Locator) AddMessage(ctx context.Context, msg string, chatID, userID int
 	defer l.Unlock()
 
 	hash := l.MsgHash(msg)
+	if msg == "" {
+		// every text-less message hashes to sha256("") and they would collapse onto a single row
+		// under PRIMARY KEY (gid, hash), so caption-less media keys on the message identity instead.
+		// Message() only ever looks up non-empty text, so this key is never queried.
+		hash = l.MsgHash(fmt.Sprintf("%d:%d:%d", chatID, userID, msgID))
+	}
 	log.Printf("[DEBUG] add message to locator: %q, hash:%s, userID:%d, user name:%q, chatID:%d, msgID:%d",
 		msg, hash, userID, userName, chatID, msgID)
 

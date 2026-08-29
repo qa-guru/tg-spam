@@ -11,7 +11,7 @@
 - Always run tests and linter before committing
 - For linter use `golangci-lint run`
 - Run tests and linter after making significant changes to verify functionality
-- Go version: 1.24+
+- Go version: 1.25+
 - Don't add "Generated with Claude Code" or "Co-Authored-By: Claude" to commit messages or PRs
 - Do not include "Test plan" sections in PR descriptions
 - Do not add comments that describe changes, progress, or historical modifications. Avoid comments like "new function," "added test," "now we changed this," or "previously used X, now using Y." Comments should only describe the current state and purpose of the code, not its history or evolution.
@@ -101,6 +101,13 @@
 - Admin notification text in `directReport` shows channel display name and channel ID instead of Channel_Bot identity
 - `extractUsername` supports `tg://user` links, `t.me` channel links, plain channel name+ID, and `{id name...}` formats
 
+### Report Command Routing
+- `spam`, `/spam`, `report`, `/report` are equivalent for a non-superuser: all four are matched by `isReportCommand` (`app/events/listener.go`) and behave identically in every path. `/report@botname` is additionally accepted; there is no `/spam@botname` equivalent, deliberately (nothing autocompletes it, the bot never calls `SetMyCommands`)
+- The same text from a superuser or the linked channel never reaches `isReportCommand` — `procSuperReply` intercepts it earlier in the `Do` loop for ban + spam-sample training. Identical text, different handler, decided purely by sender privilege
+- **`isReportCommand` has TWO consumers**, and this is the trap: `procUserReply` (files the report) and the orphaned-command cleanup in `Do`, which deletes a matching message sent *without* a reply. Anything added to the predicate immediately becomes deletable as an orphaned command, in every chat the bot receives updates for, and that branch is NOT gated on `ReportConfig.Enabled` — unlike `procUserReply`, which suppresses the command when reporting is off
+- The user-report dispatch requires `update.Message.SenderChat == nil`. Senders posting on behalf of a chat (anonymous admin `GroupAnonymousBot`, "post as channel" `Channel_Bot`) carry a pseudo-user in `From` that can never be an approved reporter, so without the guard `DirectUserReport` deletes their command message and files nothing
+- Known gap, unrelated to the command forms: `DirectUserReport` never resolves `SenderChat` for the *reported* message, so a channel-origin spam post is filed and banned as the shared `Channel_Bot` identity rather than the channel. `admin.go`'s `directReport` handles this correctly; the user-report path does not
+
 ### ExtraDeleteIDs Feature
 - `spamcheck.Response` includes `ExtraDeleteIDs []int` field for additional message IDs to delete when spam is detected
 - Any spam checker can populate this field to request deletion of related messages
@@ -132,7 +139,8 @@
 - Bypasses LLM consensus by design: returns `true, cr` immediately when flagged instead of letting the unified `spamDetected`/LLM-consensus flow evaluate. Rationale: short-message flood is a behavioral signal that does not depend on content, and an LLM looking at the latest single short message has no information that would justify overriding the count
 - Edge cases (handled via fast-bail returns in `isShortMsgFlood`): empty `req.UserID`, `req.CheckOnly`, message length ≥ `MinMsgLen`, user already approved (`approvedCount >= FirstMessagesCount`), locator error (logged at WARN, falls through to normal checks)
 - Channel `SenderChat` flow works transparently: `bot.OnMessage` already maps `checkUserID = msg.SenderChat.ID` and the locator stores under the same ID; anonymous admin and linked-channel posts skip `OnMessage` entirely (listener.go:387)
-- Edits: locator keys by `hash(text)` with `INSERT OR REPLACE` — no-op edits do not increment count; content-changing edits create a new row (consistent with `duplicateDetector`)
+- Edits: locator keys by `hash(text)` with `INSERT OR REPLACE` — no-op edits do not increment count; content-changing edits create a new row (consistent with `duplicateDetector`). Exception: text-less messages key by `hash("chatID:userID:msgID")` (`locator.go:AddMessage`), because every empty text hashes to `sha256("")` and would collapse all caption-less media in a gid onto one row under `PRIMARY KEY (gid, hash)`. An edit of such a message keeps the same key, so the no-op-edit property holds
+- Media-only messages (photo/video with no caption) therefore count toward `total`: they reach `AddMessage` with empty text (`listener.go:389` passes them on `msg.Image`/`WithVideo`/`WithVideoNote`) and `isShortMsgFlood` treats length 0 as short. This is intentional — image-flood probing is a real spam pattern — but it means an unapproved user posting N caption-less photos accumulates N, not 1
 - Training/dry/soft-ban: feature emits a normal spam result through the existing pipeline, so the listener's mode handling intercepts identically to other spam checks (no special-casing)
 - Naturally-terse legitimate users carry a bounded false-positive risk during the evaluation window only; once the user crosses `FirstMessagesCount` they are approved and immune. Recommended baseline: `MaxShortMsgCount >= 3` with low `FirstMessagesCount` (1–2)
 

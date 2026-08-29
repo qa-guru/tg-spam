@@ -230,6 +230,8 @@ Configure with:
 
 This option is disabled by default. When enabled, the bot bans an unapproved user who has accumulated too many short messages without graduating to "approved" status. This catches spammers who probe a channel with innocuous one-word messages ("hi", "hello", "yo") that individually evade content-based checks and the duplicate detector.
 
+Media-only messages (a photo or video with no caption) count as short messages too, since image flooding is the same probing pattern without text. An unapproved user posting several caption-less photos will reach the threshold.
+
 **Important**: this check requires the first-message evaluation path (`--first-messages-count > 0` or `--first-message-only`); `--paranoid` mode is incompatible and rejected at startup. The risk window for naturally terse legitimate users is bounded to the evaluation period; once approved, the check skips for the rest of that user's lifetime.
 
 Configure with:
@@ -367,7 +369,7 @@ To allow such a feature, `--admin.group=,  [$ADMIN_GROUP]` must be specified. Th
 
 **admin commands**
 
-* Admins can reply to the spam message with the text `spam` or `/spam` to mark it as spam. This is useful for training purposes as the bot will learn from the spam messages marked by the admin and will be able to detect similar spam in the future.
+* Admins can reply to the spam message with the text `spam` or `/spam` to mark it as spam. This is useful for training purposes as the bot will learn from the spam messages marked by the admin and will be able to detect similar spam in the future. The same `spam` or `/spam` text from a regular user posting under his own account does not mark the message as spam; it is an alias for `report` and behaves exactly like it (see [User Spam Reporting](#user-spam-reporting)).
 
 * Replying to the message with the text `ban` or `/ban` will ban the user who sent the message. This is useful for post-moderation purposes. Essentially this is the same as sending `/spam` but without adding the message to the spam samples file.
 
@@ -399,17 +401,19 @@ All samples are stored in the database, which can be specified using the `--db=,
 
 ### User Spam Reporting
 
-Regular users can report potential spam messages to moderators by replying to a suspicious message with `/report` or `report`. This feature provides a crowdsourced approach to spam detection, complementing automated spam filters.
+Regular users can report potential spam messages to moderators by replying to a suspicious message with `/report`, `report`, `/spam` or `spam`. This feature provides a crowdsourced approach to spam detection, complementing automated spam filters.
 
 To enable user spam reporting, set `--report.enabled` to `true` and configure an admin chat using `--admin.group=`. When enabled:
 
-1. Users reply to suspicious messages with `/report` to flag them for review
+1. Users reply to suspicious messages with `/report` or `/spam` to flag them for review
 2. The bot tracks all reports for each message
-3. When the number of unique reporters reaches the threshold (configurable via `--report.threshold=`), the bot sends a notification to the admin chat
+3. When the number of unique reporters reaches the threshold (configurable via `--report.threshold=`), the bot sends a notification to the admin chat and mentions all superusers configured by username
 4. Admins can review the reported message and take action using inline buttons:
    - **Approve Ban**: Immediately ban the reported user and delete the reported message
    - **Reject**: Reject this report without taking action
    - **Ban Reporters**: Open a dialog to select and ban a specific reporter who may be abusing the reporting system (requires confirmation)
+
+Only superusers configured by username can be included as Telegram `@username` mentions. Numeric IDs do not provide a username.
 
 #### Advanced Reporting Features
 
@@ -419,7 +423,7 @@ To enable user spam reporting, set `--report.enabled` to `true` and configure an
 
   Example: `--report.threshold=2 --report.auto-ban-threshold=5` will notify admins after 2 reports but automatically ban after 5 reports.
 
-The reporting system includes rate limiting to prevent abuse. Each user can submit up to `--report.rate-limit=` reports (default: 10) within `--report.rate-period=` (default: 1 hour). The `/report` command message is automatically deleted to keep the chat clean.
+The reporting system includes rate limiting to prevent abuse. Each user can submit up to `--report.rate-limit=` reports (default: 10) within `--report.rate-period=` (default: 1 hour). The report command message is automatically deleted to keep the chat clean.
 
 All reports are stored in the database for audit purposes and can help identify patterns of spam or abuse over time.
 
@@ -455,21 +459,32 @@ To enable Lua plugins:
 4. Optionally, specify which plugins to enable with `--lua-plugins.enabled-plugins=plugin1,plugin2`
 5. Optionally, enable dynamic reloading with `--lua-plugins.dynamic-reload` to automatically reload plugins when they change
 
-Each Lua plugin must define a `check` function that takes a request object and returns a boolean (is it spam) and a string (details):
+Each Lua plugin must define a `check` function that takes a request object and returns a boolean (is it spam), a string (details), and an optional third boolean (approve this message):
 
 ```lua
+local approved_user_ids = {
+    -- Add Telegram user IDs that may approve the current message:
+    -- ["123456789"] = true,
+}
+
 function check(request)
     -- request contains: msg, user_id, user_name, first_name, last_name, is_premium, meta
     -- meta contains: images, links, mentions, has_video, has_audio, has_forward, has_keyboard, has_giveaway, has_contact, has_external_reply, message_id
-    
-    -- Your custom spam detection logic here
+
     if string.match(request.msg, "some pattern") then
         return true, "matched suspicious pattern"
     end
-    
-    return false, "message looks clean"
+
+    local approve = approved_user_ids[request.user_id] == true
+    return false, "message looks clean", approve
 end
 ```
+
+The third return is backward compatible. Missing, `nil`, and boolean `false` mean no approval. Only an exact boolean `true` is accepted. Other types are ignored and logged once per plugin and type. A plugin error never approves a message, and `true` cannot approve a result where the same plugin returned spam.
+
+Approval clears soft spam results from the current `Detector.Check` call. When at least one plugin approves and a soft check reports spam, the detector returns ham, skips LLM checks, and adds one `lua-approve` row naming the approving plugins. Soft checks include duplicate detection, stop words, emoji, meta checks, Lua checks, CAS, multi-language text, abnormal spacing, similarity, and the classifier. Short-message-flood and prohibited-language checks return before Lua plugins run and cannot be cleared this way.
+
+A cleared short message follows the existing short-message rule: it does not enter ham history or count toward user graduation. A cleared normal-length message follows the ordinary ham path and enters the bounded ham history. It also counts toward configured user graduation unless the request is check-only. With the default `--first-messages-count=1`, one cleared normal-length message graduates the sender, so later messages skip content analysis under the existing graduation rules. When LLM history is enabled, that message can be included as context in later LLM checks, including checks for other users.
 
 Several helper functions are provided to Lua scripts:
 - `count_substring(text, substr)` - Counts occurrences of a substring
